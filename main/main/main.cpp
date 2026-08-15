@@ -2,7 +2,7 @@
  * BLE HID Mouse for ESP32-C3 with PAW3395 sensor
  * 
  * This firmware implements:
- * - BLE HID (NimBLE) connection
+ * - BLE HID connection using esp_hid_gap
  * - PAW3395 sensor motion tracking (16-bit delta_x/delta_y)
  * - 5 buttons support (left, right, middle, wheel up, wheel down)
  * - Configurable settings via PC application
@@ -19,15 +19,8 @@
 #include "nvs_flash.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
-
-#include "nimble/ble.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "host/ble_hs.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
-#include "hid/host/hid_host.h"
-#include "hid/device/hid_device.h"
+#include "esp_hid_gap.h"
+#include "esp_ble_hid_dev.h"
 
 // Include existing classes
 #include "paw3395.h"
@@ -42,7 +35,6 @@ Buttons buttons;
 Settings settings;
 
 // Button states
-static uint8_t button_state = 0;
 #define BUTTON_LEFT     (1 << 0)
 #define BUTTON_RIGHT    (1 << 1)
 #define BUTTON_MIDDLE   (1 << 2)
@@ -117,20 +109,6 @@ static const uint8_t hid_report_desc[] = {
     0xC0               // End Collection
 };
 
-static struct ble_hs_cfg ble_hs_config = {
-    .hs_gatts_register_cb = NULL,
-    .hs_gatts_register_arg = NULL,
-};
-
-// Custom GATT service UUID for settings
-static const ble_uuid128_t settings_service_uuid = 
-    BLE_UUID128_INIT(0x2d, 0x71, 0x00, 0x00, 0xb5, 0xa6, 0x4c, 0x9d, 0x9e, 0x3f, 0x8a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f);
-static const ble_uuid128_t settings_char_uuid =
-    BLE_UUID128_INIT(0x2d, 0x71, 0x00, 0x01, 0xb5, 0xa6, 0x4c, 0x9d, 0x9e, 0x3f, 0x8a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f);
-
-static uint16_t settings_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-static uint16_t settings_val_handle;
-
 // Protocol commands
 #define CMD_GET_SETTINGS_LIST   0x01
 #define CMD_GET_SETTING         0x02
@@ -139,33 +117,16 @@ static uint16_t settings_val_handle;
 
 // Buffer for settings communication
 static uint8_t settings_buffer[64];
-
-static void send_settings_response(uint8_t cmd, const uint8_t* data, uint8_t len)
-{
-    if (settings_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
-        return;
-    }
-    
-    struct os_mbuf *om;
-    om = ble_hs_mbuf_from_flat(&cmd, 1);
-    if (len > 0 && data != NULL) {
-        ble_hs_mbuf_append(om, data, len);
-    }
-    
-    ble_gattc_notify_custom(settings_conn_handle, settings_val_handle, om);
-}
+static bool settings_pending = false;
 
 static void handle_get_settings_list(void)
 {
-    // Send list of all settings: name, value, min, max for each
     uint8_t response[64];
     uint8_t idx = 0;
     
-    // First byte is count
     response[idx++] = Settings::data_count;
     
     for (uint8_t i = 0; i < Settings::data_count && idx < 60; i++) {
-        // Each setting: name length (1 byte), name chars, value (4 bytes), min (4 bytes), max (4 bytes)
         size_t name_len = strlen(settings.data[i].name);
         if (idx + 1 + name_len + 12 > 64) break;
         
@@ -173,21 +134,18 @@ static void handle_get_settings_list(void)
         memcpy(&response[idx], settings.data[i].name, name_len);
         idx += name_len;
         
-        // Value (int32_t, little endian)
         int32_t val = settings.get(settings.data[i].name);
         response[idx++] = val & 0xFF;
         response[idx++] = (val >> 8) & 0xFF;
         response[idx++] = (val >> 16) & 0xFF;
         response[idx++] = (val >> 24) & 0xFF;
         
-        // Min (int32_t, little endian)
         int32_t min_val = settings.data[i].min;
         response[idx++] = min_val & 0xFF;
         response[idx++] = (min_val >> 8) & 0xFF;
         response[idx++] = (min_val >> 16) & 0xFF;
         response[idx++] = (min_val >> 24) & 0xFF;
         
-        // Max (int32_t, little endian)
         int32_t max_val = settings.data[i].max;
         response[idx++] = max_val & 0xFF;
         response[idx++] = (max_val >> 8) & 0xFF;
@@ -195,7 +153,8 @@ static void handle_get_settings_list(void)
         response[idx++] = (max_val >> 24) & 0xFF;
     }
     
-    send_settings_response(CMD_GET_SETTINGS_LIST, response, idx);
+    memcpy(settings_buffer, response, idx);
+    settings_pending = true;
 }
 
 static void handle_get_setting(const char* name)
@@ -216,7 +175,8 @@ static void handle_get_setting(const char* name)
     response[idx++] = (val >> 16) & 0xFF;
     response[idx++] = (val >> 24) & 0xFF;
     
-    send_settings_response(CMD_GET_SETTING, response, idx);
+    memcpy(settings_buffer, response, idx);
+    settings_pending = true;
 }
 
 static void handle_set_setting(const uint8_t* data, uint8_t len)
@@ -239,10 +199,8 @@ static void handle_set_setting(const uint8_t* data, uint8_t len)
     
     ESP_LOGI(TAG, "Setting updated: %s = %ld", name, (long)value);
     
-    // Apply setting to sensor
     sensor.set(name, value);
     
-    // Send confirmation
     uint8_t response[64];
     response[0] = name_len;
     memcpy(&response[1], name, name_len);
@@ -251,138 +209,69 @@ static void handle_set_setting(const uint8_t* data, uint8_t len)
     response[3 + name_len] = (value >> 16) & 0xFF;
     response[4 + name_len] = (value >> 24) & 0xFF;
     
-    send_settings_response(CMD_SET_SETTING, response, 5 + name_len);
+    memcpy(settings_buffer, response, 5 + name_len);
+    settings_pending = true;
 }
 
-static int settings_access_cb(uint16_t conn_handle, uint16_t attr_handle,
-                              struct ble_gatt_access_ctxt *ctxt, void *arg)
+static void esp_hid_event_handler(void *handler_args, esp_event_base_t base, 
+                                   int32_t event_id, void *event_data)
 {
-    if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        settings_conn_handle = conn_handle;
-        
-        // Read the feature report data
-        uint8_t data[64];
-        int read_len = ctxt->om->om_len;
-        if (read_len > 64) read_len = 64;
-        
-        os_mbuf_copydata(ctxt->om, 0, read_len, data);
-        
-        if (read_len >= 1) {
-            uint8_t cmd = data[0];
+    esp_hid_gap_event_t *event = (esp_hid_gap_event_t *)event_data;
+    
+    switch (event_id) {
+        case ESP_HID_GAP_EVENT_OPEN:
+            ESP_LOGI(TAG, "HID Open");
+            break;
             
-            switch (cmd) {
-                case CMD_GET_SETTINGS_LIST:
-                    handle_get_settings_list();
-                    break;
-                    
-                case CMD_GET_SETTING:
-                    if (read_len >= 2) {
-                        char name[61];
-                        uint8_t name_len = data[1];
-                        if (name_len <= 60 && read_len >= 2 + name_len) {
-                            memcpy(name, &data[2], name_len);
-                            name[name_len] = '\0';
-                            handle_get_setting(name);
+        case ESP_HID_GAP_EVENT_CLOSE:
+            ESP_LOGI(TAG, "HID Close");
+            break;
+            
+        case ESP_HID_GAP_EVENT_WRITE:
+            if (event->write.report_id == 0x02 && event->write.length > 0) {
+                uint8_t cmd = event->write.data[0];
+                
+                switch (cmd) {
+                    case CMD_GET_SETTINGS_LIST:
+                        handle_get_settings_list();
+                        break;
+                        
+                    case CMD_GET_SETTING:
+                        if (event->write.length >= 2) {
+                            char name[61];
+                            uint8_t name_len = event->write.data[1];
+                            if (name_len <= 60 && event->write.length >= 2 + name_len) {
+                                memcpy(name, &event->write.data[2], name_len);
+                                name[name_len] = '\0';
+                                handle_get_setting(name);
+                            }
                         }
-                    }
-                    break;
-                    
-                case CMD_SET_SETTING:
-                    if (read_len >= 2) {
-                        handle_set_setting(&data[1], read_len - 1);
-                    }
-                    break;
-                    
-                case CMD_APPLY_SETTINGS:
-                    // All settings are applied immediately when set
-                    send_settings_response(CMD_APPLY_SETTINGS, NULL, 0);
-                    break;
-            }
-        }
-        
-        return 0;
-    }
-    
-    return BLE_ATT_ERR_UNLIKELY;
-}
-
-static const struct ble_gatt_svc_def settings_svc_defs[] = {
-    {
-        .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = &settings_service_uuid.u,
-        .characteristics = (struct ble_gatt_chr_def[]) {
-            {
-                .uuid = &settings_char_uuid.u,
-                .access_cb = settings_access_cb,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &settings_val_handle,
-            },
-            {
-                0, /* No more characteristics in this service. */
-            },
-        },
-    },
-    {
-        0, /* No more services. */
-    },
-};
-
-static int bleprph_gap_event(struct ble_gap_event *event, void *arg)
-{
-    switch (event->type) {
-        case BLE_GAP_EVENT_CONNECT:
-            if (event->connect.status == 0) {
-                ESP_LOGI(TAG, "Connection established");
-            } else {
-                ESP_LOGI(TAG, "Connection failed, code=%d", event->connect.status);
+                        break;
+                        
+                    case CMD_SET_SETTING:
+                        if (event->write.length >= 2) {
+                            handle_set_setting(&event->write.data[1], event->write.length - 1);
+                        }
+                        break;
+                        
+                    case CMD_APPLY_SETTINGS:
+                        settings_pending = true;
+                        settings_buffer[0] = CMD_APPLY_SETTINGS;
+                        break;
+                }
             }
             break;
             
-        case BLE_GAP_EVENT_DISCONNECT:
-            ESP_LOGI(TAG, "Disconnected");
-            settings_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-            break;
-            
-        case BLE_GAP_EVENT_SUBSCRIBE:
-            ESP_LOGI(TAG, "Subscribe event, op=%d", event->subscribe.cur_op);
+        default:
             break;
     }
-    
-    return 0;
-}
-
-static void bleprph_on_sync(void)
-{
-    ble_hs_id_infer_auto(0, NULL);
-    
-    ble_gap_adv_set_fields(
-        &(const ble_adv_fields_t){
-            .flags = BLE_HS_ADV_F_DISC_GEN,
-            .tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO,
-            .appearance = BLE_HS_ADV_APPEARANCE_HID_MOUSE,
-            .appearance_is_present = 1,
-            .complete_svcs128_is_present = 1,
-            .complete_svcs128 = &settings_service_uuid.u,
-            .num_complete_svcs128 = 1,
-        }
-    );
-    
-    ble_gap_adv_start(0, NULL, BLE_HS_FOREVER, NULL, bleprph_gap_event, NULL);
-    ESP_LOGI(TAG, "Advertising started");
-}
-
-static void bleprph_host_task(void *param)
-{
-    ESP_LOGI(TAG, "BLE Host Task Started");
-    nimble_port_run();
-    nimble_port_freertos_deinit();
 }
 
 // Send HID report with motion and buttons
 static void send_hid_report(int16_t delta_x, int16_t delta_y, uint8_t buttons, int8_t wheel)
 {
     uint8_t report[7];
-    report[0] = 0x01;  // Report ID
+    report[0] = 0x01;
     report[1] = buttons;
     report[2] = delta_x & 0xFF;
     report[3] = (delta_x >> 8) & 0xFF;
@@ -398,8 +287,6 @@ static uint8_t read_buttons(void)
 {
     uint8_t state = 0;
     
-    // Map buttons according to user requirements:
-    // left, right, middle, wheel up, wheel down
     if (buttons.read(button_func::left)) {
         state |= BUTTON_LEFT;
     }
@@ -422,14 +309,11 @@ static uint8_t read_buttons(void)
 // Main mouse task
 static void mouse_task(void *pvParameters)
 {
-    // Wait for BLE to initialize
     vTaskDelay(pdMS_TO_TICKS(2000));
     
-    // Initialize sensor with settings
     sensor.init();
     buttons.init();
     
-    // Apply initial settings
     for (uint8_t i = 0; i < Settings::data_count; i++) {
         int32_t val = settings.get(settings.data[i].name);
         sensor.set(settings.data[i].name, val);
@@ -439,20 +323,17 @@ static void mouse_task(void *pvParameters)
     int8_t wheel = 0;
     
     while (1) {
-        // Read motion from sensor
         if (sensor.moving()) {
             motion_read_data mrd = sensor.read_motion();
             
-            if (mrd.motion & 0x80) {  // Motion valid
+            if (mrd.motion & 0x80) {
                 acc_delta_x += mrd.delta_x;
                 acc_delta_y += mrd.delta_y;
             }
         }
         
-        // Read buttons
         uint8_t current_buttons = read_buttons();
         
-        // Handle wheel buttons (generate single scroll events)
         if ((current_buttons & BUTTON_WHEEL_UP) && !(last_button_state & BUTTON_WHEEL_UP)) {
             wheel = 1;
         } else if ((current_buttons & BUTTON_WHEEL_DOWN) && !(last_button_state & BUTTON_WHEEL_DOWN)) {
@@ -461,7 +342,6 @@ static void mouse_task(void *pvParameters)
             wheel = 0;
         }
         
-        // Send report if there's motion or button change
         if (acc_delta_x != 0 || acc_delta_y != 0 || current_buttons != last_button_state || wheel != 0) {
             send_hid_report(acc_delta_x, acc_delta_y, current_buttons, wheel);
             
@@ -470,7 +350,19 @@ static void mouse_task(void *pvParameters)
             last_button_state = current_buttons;
         }
         
-        vTaskDelay(pdMS_TO_TICKS(8));  // ~125 Hz polling
+        vTaskDelay(pdMS_TO_TICKS(8));
+    }
+}
+
+// Settings task - sends pending responses
+static void settings_task(void *pvParameters)
+{
+    while (1) {
+        if (settings_pending) {
+            esp_ble_hid_dev_send_report(HID_DEV_REPORT_FEATURE, 0x02, settings_buffer, 64);
+            settings_pending = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -483,32 +375,25 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
     ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
     
-    ble_hs_cfg.gatts_register_cb = NULL;
-    ble_hs_cfg.sm_bonding = 0;
-    ble_hs_cfg.sm_mitm = 0;
-    ble_hs_cfg.sm_sc = 0;
+    ESP_ERROR_CHECK(esp_bluedroid_init());
+    ESP_ERROR_CHECK(esp_bluedroid_enable());
     
-    ESP_ERROR_CHECK(esp_nimble_hci_init());
-    nimble_port_init();
+    ESP_ERROR_CHECK(esp_hid_gap_register_callback(esp_hid_event_handler, NULL));
     
-    // Register HID device
-    esp_ble_hid_dev_init();
+    esp_hid_device_config_t device_config = {
+        .device_name = (char*)"PAW3395 Mouse",
+        .manufacturer_name = (char*)"Custom",
+        .serial_number = (char*)"1234567890",
+        .firmware_version = (char*)"1.0",
+        .hardware_version = (char*)"1.0",
+        .report_map = hid_report_desc,
+        .report_map_len = sizeof(hid_report_desc),
+    };
     
-    // Register HID report descriptor
-    esp_ble_hid_dev_set_report_descriptor(hid_report_desc, sizeof(hid_report_desc));
+    ESP_ERROR_CHECK(esp_hid_gap_start_adv(&device_config));
     
-    // Register custom settings service
-    ble_gatts_count_cfg(settings_svc_defs);
-    ble_gatts_add_svcs(settings_svc_defs);
+    ESP_LOGI(TAG, "BLE HID Mouse started, advertising...");
     
-    // Start BLE host task
-    nimble_port_freertos_init(bleprph_host_task);
-    
-    // Configure GAP
-    ble_svc_gap_device_name_set("PAW3395_Mouse");
-    
-    // Start mouse task
     xTaskCreate(mouse_task, "mouse_task", 4096, NULL, 5, NULL);
-    
-    ESP_LOGI(TAG, "Application started");
+    xTaskCreate(settings_task, "settings_task", 4096, NULL, 5, NULL);
 }

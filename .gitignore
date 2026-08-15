@@ -1,58 +1,39 @@
 ```
 # Build artifacts
 build/
-dist/
-*.o
-*.obj
-*.a
-*.so
-*.dll
-*.exe
-*.out
+cmake-build-*/
 
 # Dependencies
-node_modules/
-venv/
-.venv/
 __pycache__/
-*.egg-info/
-.Python
-pip-log.txt
-pip-delete-this-directory.txt
-
-# CMake specific
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-*.cmake
-conanbuildinfo.txt
-conaninfo.txt
-.settings/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.local
+*.env.*
 
 # Logs and temp files
 *.log
 *.tmp
-*.swp
-*.swo
-*~
-
-# Environment
-.env
-.env.local
-.env.*
 
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
 
-# Coverage
-.coverage
-coverage/
-htmlcov/
-.coverage.*
+# Compiled files
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Python specific
+*.py[cod]
+*$py.class
+*.so
+.Python
 ```
