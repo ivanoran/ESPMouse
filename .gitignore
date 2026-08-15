@@ -4,6 +4,7 @@ build/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
+Makefile
 *.cmake
 *.o
 *.a
@@ -21,21 +22,18 @@ vendor/
 *.tmp
 *.swp
 
-# Editors
-.vscode/
-.idea/
-
 # Environment
 .env
 .env.local
 *.env.*
 
-# Coverage
-coverage/
-htmlcov/
-.coverage
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# OS
+# OS specific
 .DS_Store
 Thumbs.db
 ```
