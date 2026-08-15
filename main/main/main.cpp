@@ -30,9 +30,9 @@
 #include "hid/device/hid_device.h"
 
 // Include existing classes
-#include "../paw3395.h"
-#include "../buttons.h"
-#include "../settings.h"
+#include "paw3395.h"
+#include "buttons.h"
+#include "settings.h"
 
 static const char *TAG = "mouse";
 
