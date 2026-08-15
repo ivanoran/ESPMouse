@@ -1,27 +1,41 @@
 ```
 # Build artifacts
 build/
-cmake-build*/
-CMakeFiles/
-CMakeCache.txt
-Makefile
-*.cmake
+dist/
 *.o
+*.obj
 *.a
 *.so
-*.dylib
 *.dll
 *.exe
 *.out
 
 # Dependencies
-vendor/
-_third_party/
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.egg-info/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# CMake specific
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+conanbuildinfo.txt
+conaninfo.txt
+.settings/
 
 # Logs and temp files
 *.log
 *.tmp
 *.swp
+*.swo
+*~
 
 # Environment
 .env
@@ -33,13 +47,12 @@ _third_party/
 .idea/
 *.swp
 *.swo
-
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# OS
 .DS_Store
 Thumbs.db
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+.coverage.*
 ```
