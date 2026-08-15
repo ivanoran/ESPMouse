@@ -1,24 +1,24 @@
 ```
-# Build artifacts
-build/
-CMakeFiles/
-cmake_install.cmake
-CMakeCache.txt
-Makefile
+# Compiled and build artifacts
+*.pyc
+__pycache__/
 *.o
-*.a
-*.so
-*.dylib
-*.dll
+*.obj
+*.class
 *.exe
+*.dll
+*.so
+*.a
 *.out
 
 # Dependencies
-venv/
 .venv/
-__pycache__/
-*.egg-info/
-.Python
+venv/
+node_modules/
+dist/
+build/
+target/
+.gradle/
 
 # Logs and temp files
 *.log
@@ -37,14 +37,20 @@ __pycache__/
 *.swp
 *.swo
 
+# System files
+.DS_Store
+Thumbs.db
+
 # Coverage
 .coverage
 coverage/
 htmlcov/
 
-# OS
-.DS_Store
-Thumbs.db
+# Python specific
+*.pyc
+__pycache__/
+.mypy_cache/
+.pytest_cache/
 
 # Compressed files
 *.zip

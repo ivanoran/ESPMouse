@@ -1,4 +1,9 @@
-#include <Preferences.h>
+#pragma once
+
+#include <string>
+#include <cstring>
+#include "nvs_flash.h"
+#include "nvs.h"
 
 struct setting_line {
     const char* name;       // текстовый ключ
@@ -10,8 +15,8 @@ struct setting_line {
 class Settings
 {
     public:
-
         static const uint8_t data_count = 11;
+        
         const setting_line data[data_count] = 
         {
         //  {name               value   min     max}
@@ -27,55 +32,66 @@ class Settings
             {"resolution",      0,      0,      300},
             {"spi_speed",       1,      1,      39},
         };
-        
 
         Settings()
         {
-            _pref.begin("config", false);
-            for (uint8_t i = 0; i < data_count; i++) 
-            {
-                if (!_pref.isKey(data[i].name)) // exist
-                {
-                    _pref.putInt(data[i].name, data[i].value);
+            esp_err_t err = nvs_flash_init();
+            if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+                ESP_ERROR_CHECK(nvs_flash_erase());
+                err = nvs_flash_init();
+            }
+            ESP_ERROR_CHECK(err);
+
+            err = nvs_open("config", NVS_READWRITE, &_nvs_handle);
+            ESP_ERROR_CHECK(err);
+
+            // Инициализация значений по умолчанию, если их нет в NVS
+            for (uint8_t i = 0; i < data_count; i++) {
+                int32_t val;
+                if (nvs_get_i32(_nvs_handle, data[i].name, &val) != ESP_OK) {
+                    nvs_set_i32(_nvs_handle, data[i].name, data[i].value);
                 }
             }
-            _pref.end();
-        };
+            nvs_commit(_nvs_handle);
+        }
+
+        ~Settings() {
+            if (_nvs_handle) {
+                nvs_close(_nvs_handle);
+            }
+        }
 
         int32_t get(const char* name)
         {
             int32_t value = 0;
-
-            _pref.begin("config", true);
-            for (uint8_t i = 0; i < data_count; i++)
-            {
-                if (strcmp(data[i].name, name) == 0)
-                {
-                    value = _pref.getInt(name, data[i].value);
+            for (uint8_t i = 0; i < data_count; i++) {
+                if (strcmp(data[i].name, name) == 0) {
+                    esp_err_t err = nvs_get_i32(_nvs_handle, name, &value);
+                    if (err != ESP_OK) {
+                        value = data[i].value; // возвращаем дефолт при ошибке
+                    }
+                    break;
                 }
             }
-            _pref.end();
-
             return value;
         }
 
         void set(const char* name, int32_t value)
         {
-            for (uint8_t i = 0; i < data_count; i++)
-            {
-                if (strcmp(data[i].name, name) == 0)
-                {
-                    if (value >= data[i].min && value <= data[i].max) 
-                    {
-                        _pref.begin("config", false);
-                        _pref.putInt(name, value);
-                        _pref.end();
+            for (uint8_t i = 0; i < data_count; i++) {
+                if (strcmp(data[i].name, name) == 0) {
+                    if (value >= data[i].min && value <= data[i].max) {
+                        esp_err_t err = nvs_set_i32(_nvs_handle, name, value);
+                        if (err == ESP_OK) {
+                            nvs_commit(_nvs_handle);
+                        }
                     }
+                    break;
                 }
             }
         }
 
     private:
-        Preferences _pref;
+        nvs_handle_t _nvs_handle = 0;
 };
 
