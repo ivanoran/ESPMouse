@@ -1,3 +1,3 @@
 idf_component_register(SRCS "main.cpp"
                     INCLUDE_DIRS "."
-                    REQUIRES bt nvs_flash esp_hid driver)
+                    REQUIRES esp_bt nvs_flash esp_hid driver)
