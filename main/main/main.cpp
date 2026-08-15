@@ -18,7 +18,6 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_bt.h"
-#include "esp_bt_main.h"
 #include "esp_hid_gap.h"
 #include "esp_ble_hid_dev.h"
 
